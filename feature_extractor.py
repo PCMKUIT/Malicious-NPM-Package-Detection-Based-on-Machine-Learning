@@ -200,7 +200,7 @@ class AdvancedFeatureExtractor:
         return features
 
     def extract_basic_features(self, package_path):
-        """Extract basic structural features (from your original code)"""
+        """Extract basic structural features"""
         features = {}
         
         try:
