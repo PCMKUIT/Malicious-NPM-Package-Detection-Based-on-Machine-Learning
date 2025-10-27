@@ -200,7 +200,7 @@ class AdvancedFeatureExtractor:
         return features
 
     def extract_basic_features(self, package_path):
-        """Extract basic structural features (from your original code)"""
+        """Extract basic structural features"""
         features = {}
         
         try:
@@ -221,38 +221,37 @@ class AdvancedFeatureExtractor:
             
             # 3. Metadata Features
             package_json_path = self.find_package_json(package_path)
+            # ĐẦU TIÊN set tất cả giá trị mặc định
+            features.update({
+                'dependencies_count': 0,
+                'dev_dependencies_count': 0,
+                'scripts_count': 0,
+                'has_preinstall': 0,
+                'has_postinstall': 0,
+                'has_preuninstall': 0,
+                'package_version': '1.0.0',
+                'package_name': 'unknown'
+            })
+
+            # CHỈ update nếu đọc được package.json
             if package_json_path and package_json_path.exists():
                 try:
                     with open(package_json_path, 'r', encoding='utf-8', errors='ignore') as f:
                         package_data = json.load(f)
                     
+                    # Override với giá trị thực
                     features['dependencies_count'] = len(package_data.get('dependencies', {}))
                     features['dev_dependencies_count'] = len(package_data.get('devDependencies', {}))
                     features['scripts_count'] = len(package_data.get('scripts', {}))
                     features['has_preinstall'] = 1 if 'preinstall' in package_data.get('scripts', {}) else 0
                     features['has_postinstall'] = 1 if 'postinstall' in package_data.get('scripts', {}) else 0
                     features['has_preuninstall'] = 1 if 'preuninstall' in package_data.get('scripts', {}) else 0
-                    
                     features['package_version'] = package_data.get('version', '1.0.0')
                     features['package_name'] = package_data.get('name', 'unknown')
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    features['dependencies_count'] = 0
-                    features['dev_dependencies_count'] = 0
-                    features['scripts_count'] = 0
-                    features['has_preinstall'] = 0
-                    features['has_postinstall'] = 0
-                    features['has_preuninstall'] = 0
-                    features['package_version'] = '1.0.0'
-                    features['package_name'] = 'unknown'
-            else:
-                features['dependencies_count'] = 0
-                features['dev_dependencies_count'] = 0
-                features['scripts_count'] = 0
-                features['has_preinstall'] = 0
-                features['has_postinstall'] = 0
-                features['has_preuninstall'] = 0
-                features['package_version'] = '1.0.0'
-                features['package_name'] = 'unknown'
+                    
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    print(f"Error parsing package.json: {e}")
+                    # Giữ nguyên giá trị mặc định đã set
             
             # 4. Content Features
             features['has_readme'] = 1 if any('readme' in str(file).lower() for file in files) else 0
