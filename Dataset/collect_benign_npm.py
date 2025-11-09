@@ -7,7 +7,6 @@ import tarfile
 from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
-import concurrent.futures
 import platform
 import sys
 
@@ -18,7 +17,6 @@ SLEEP_INTERVAL = 3600
 MAX_PACKAGES_TOTAL = 5000  # MỤC TIÊU: 5000 packages thành công
 MAX_PACKAGES_PER_QUERY = 1000
 VERSIONS_PER_PACKAGE = 5
-MAX_WORKERS = 15
 PACKAGES_PER_PAGE = 250
 
 # =============================================================================
@@ -118,6 +116,23 @@ def find_npm_path():
             return npm_path
     
     raise FileNotFoundError("Cannot find npm. Please install Node.js from https://nodejs.org/")
+
+def count_total_successful_packages():
+    """Đếm tổng số packages thành công trong TOÀN BỘ BenignDataset"""
+    if not OUTPUT_ROOT.exists():
+        return 0
+    
+    total_success = 0
+    # Đếm từ TẤT CẢ log files
+    for log_file in OUTPUT_ROOT.glob("*.log"):
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if 'SUCCESS:' in line and 'Meets criteria' in line:
+                        total_success += 1
+        except Exception:
+            continue
+    return total_success
 
 def meets_package_criteria(package_path):
     """
@@ -221,7 +236,7 @@ def get_popular_packages(max_packages, days_back=30):
         headers["Authorization"] = f"Bearer {npm_token}"
         print(f"  Using npm token for API requests")
     else:
-        print(f"  {Colors.YELLOW}No npm token provided - using public API access{Colors.RESET}")
+        print(f"  {Colors.YELLOW}No npm token provided - using public API access (rate limits may apply){Colors.RESET}")
     
     # Thử nhiều ngày để đủ số lượng package
     for days_ago in range(days_back + 1):
@@ -412,9 +427,8 @@ def setup_npm_token():
         print(f"  {Colors.RED}Failed to configure npm token: {e}{Colors.RESET}")
         return False
 
-def download_and_extract_package(args):
-    """Hàm xử lý download và extract một package với feature criteria checking"""
-    npm_path, pkg_info, daily_dir, daily_log_file = args
+def download_and_extract_package(npm_path, pkg_info, daily_dir, daily_log_file):
+    """Hàm xử lý download và extract một package với feature criteria checking - CHẠY TUẦN TỰ"""
     pkg_version_string = f"{pkg_info['name']}@{pkg_info['version']}"
     
     try:
@@ -554,7 +568,6 @@ def main():
     print(f"Size: {PackageCriteria.SIZE['MIN_SIZE_KB']}KB - {PackageCriteria.SIZE['MAX_SIZE_MB']}MB")
     print(f"Content: Min {PackageCriteria.CONTENT['MIN_FILES']} files, Required: {PackageCriteria.CONTENT['REQUIRED_FILES']}")
     print(f"Metadata: Valid JSON, Main/Index.js, Semantic Versioning")
-    print(f"Based on: Liu et al. (2021), Zhou et al. (2022), Ohm et al. (2020)")
     print(f"{Colors.BLUE}================================================={Colors.RESET}\n")
     
     try:
@@ -569,39 +582,39 @@ def main():
         print("  WARNING: Continuing without npm token configuration")
     
     while True:
+        total_existing_success = count_total_successful_packages()
+        
+        print("------------------------------------------------------------")
+        print(f"Start collecting at: {datetime.now()}")
+        print(f"Total packages in dataset: {total_existing_success}/{MAX_PACKAGES_TOTAL}")
+        
+        if total_existing_success >= MAX_PACKAGES_TOTAL:
+            print(f"  {Colors.GREEN}TARGET ACHIEVED: {total_existing_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
+            print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
+            break
+        
+        remaining_target = MAX_PACKAGES_TOTAL - total_existing_success
+        print(f"Remaining target: {remaining_target} packages")
+        
         current_date = datetime.now().strftime("%Y-%m-%d")
         daily_dir = OUTPUT_ROOT / current_date
         daily_log_file = OUTPUT_ROOT / f"{current_date}.log"
         summary_file = OUTPUT_ROOT / f"{current_date}_summary.txt"
         
-        print("------------------------------------------------------------")
-        print(f"Start collecting at: {datetime.now()}")
         print(f"Working at folder: '{daily_dir}'")
         print(f"Summary Report: '{summary_file}'")
         
         daily_dir.mkdir(parents=True, exist_ok=True)
         daily_log_file.touch(exist_ok=True)
         
-        # Đếm số packages đã thành công từ log trước đó
-        existing_success_count = 0
-        if daily_log_file.exists():
-            with open(daily_log_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if 'SUCCESS:' in line:
-                        existing_success_count += 1
-        
-        remaining_target = MAX_PACKAGES_TOTAL - existing_success_count
-        
-        if remaining_target <= 0:
-            print(f"  Target already reached: {existing_success_count}/{MAX_PACKAGES_TOTAL} packages")
-            print(f"  Finished scanning. Continuing after {SLEEP_INTERVAL//60} minutes...")
-            time.sleep(SLEEP_INTERVAL)
-            continue
+        successful_downloads = 0
+        filtered_packages = 0
+        failed_downloads = 0
             
         try:
             # Lấy nhiều packages hơn để đảm bảo đủ sau khi lọc
             packages_to_fetch = min(remaining_target * 3, 5000)
-            print(f"Fetching {packages_to_fetch} popular packages from npm registry...")
+            print(f"  Fetching {packages_to_fetch} popular packages from npm registry...")
             
             packages_data = get_popular_packages(packages_to_fetch, days_back=30)
             
@@ -635,8 +648,8 @@ def main():
                                 if ':' in line:
                                     parts = line.split(':', 3)
                                     if len(parts) >= 3:
-                                        pkg_name = parts[2].strip().split(' - ')[0].strip()
-                                        processed_packages.add(pkg_name)
+                                        pkg_str = parts[2].strip().split(' - ')[0].strip()
+                                        processed_packages.add(pkg_str)
                     
                     # Lọc versions chưa xử lý
                     new_versions = []
@@ -653,60 +666,43 @@ def main():
                         print(f"  Processing {len(versions_to_process)} new versions (target: {remaining_target} successful)...")
                         print(f"  {Colors.YELLOW}Research Criteria: ACTIVE - Packages will be filtered based on feature criteria{Colors.RESET}")
                         
-                        # Chuẩn bị arguments cho multithreading
-                        download_args = [
-                            (npm_path, version_info, daily_dir, daily_log_file) 
-                            for version_info, _ in versions_to_process
-                        ]
-                        
-                        successful_downloads = 0
-                        filtered_packages = 0
-                        failed_downloads = 0
-                        
-                        # Sử dụng ThreadPoolExecutor để download đồng thời
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                            future_to_package = {
-                                executor.submit(download_and_extract_package, arg): pkg_version_string 
-                                for arg, (_, pkg_version_string) in zip(download_args, versions_to_process)
-                            }
-                            
-                            current_total_success = existing_success_count
-                            
-                            for future in concurrent.futures.as_completed(future_to_package):
-                                pkg_version_string = future_to_package[future]
+                        # XỬ LÝ TUẦN TỰ - LOẠI BỎ MULTITHREADING
+                        for i, (version_info, pkg_version_string) in enumerate(versions_to_process):
+                            if successful_downloads >= remaining_target:
+                                break
                                 
-                                try:
-                                    result_pkg, success, reason_msg = future.result()
+                            print(f"    [{i+1}/{len(versions_to_process)}] Processing: {pkg_version_string}")
+                            
+                            # Gọi hàm download tuần tự
+                            result_pkg, success, reason_msg = download_and_extract_package(
+                                npm_path, version_info, daily_dir, daily_log_file
+                            )
+                            
+                            if success:
+                                successful_downloads += 1
+                                current_total_success = total_existing_success + successful_downloads
+                                
+                                if "Criteria" in reason_msg:
+                                    print(f"      [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.GREEN}[+]{Colors.RESET} {pkg_version_string} {Colors.BLUE}[CRITERIA]{Colors.RESET}")
+                                else:
+                                    print(f"      [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.GREEN}[+]{Colors.RESET} {pkg_version_string}")
                                     
-                                    if success:
-                                        current_total_success += 1
-                                        successful_downloads += 1
-                                        if "Criteria" in reason_msg:
-                                            print(f"    [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.GREEN}[+]{Colors.RESET} {pkg_version_string} {Colors.BLUE}[CRITERIA]{Colors.RESET}")
-                                        else:
-                                            print(f"    [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.GREEN}[+]{Colors.RESET} {pkg_version_string}")
-                                            
-                                        # Kiểm tra nếu đã đủ target
-                                        if current_total_success >= MAX_PACKAGES_TOTAL:
-                                            print(f"  {Colors.GREEN}TARGET REACHED: {current_total_success}/{MAX_PACKAGES_TOTAL} packages{Colors.RESET}")
-                                            # Hủy các task còn lại
-                                            for f in future_to_package:
-                                                f.cancel()
-                                            break
-                                            
-                                    else:
-                                        if "Failed criteria" in reason_msg:
-                                            filtered_packages += 1
-                                            print(f"    [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.YELLOW}[FILTERED]{Colors.RESET} {pkg_version_string}")
-                                        else:
-                                            failed_downloads += 1
-                                            print(f"    [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.RED}[-]{Colors.RESET} {pkg_version_string}")
+                                # Kiểm tra nếu đã đủ target TỔNG
+                                if current_total_success >= MAX_PACKAGES_TOTAL:
+                                    print(f"  {Colors.GREEN}TARGET REACHED: {current_total_success}/{MAX_PACKAGES_TOTAL} packages{Colors.RESET}")
+                                    break
                                     
-                                except Exception as e:
+                            else:
+                                if "Failed criteria" in reason_msg:
+                                    filtered_packages += 1
+                                    current_total_success = total_existing_success + successful_downloads
+                                    print(f"      [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.YELLOW}[FILTERED]{Colors.RESET} {pkg_version_string}")
+                                else:
                                     failed_downloads += 1
-                                    print(f"    [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.RED}[-]{Colors.RESET} {pkg_version_string}")
+                                    current_total_success = total_existing_success + successful_downloads
+                                    print(f"      [{current_total_success:04d}/{MAX_PACKAGES_TOTAL}] {Colors.RED}[-]{Colors.RESET} {pkg_version_string}")
 
-                        current_total_success = existing_success_count + successful_downloads
+                        current_total_success = total_existing_success + successful_downloads
                         print(f"  Download summary: {successful_downloads} successful, {filtered_packages} filtered, {failed_downloads} failed")
                         print(f"  Total progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
                         
@@ -716,10 +712,12 @@ def main():
         except Exception as e:
             print(f"  Unexpected error: {e}")
         
-        # Kiểm tra nếu đã đạt target
-        current_total_success = existing_success_count + successful_downloads
+        # Kiểm tra nếu đã đạt target TỔNG
+        current_total_success = total_existing_success + successful_downloads
         if current_total_success >= MAX_PACKAGES_TOTAL:
             print(f"  {Colors.GREEN}TARGET ACHIEVED: {current_total_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
+            print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
+            break
         else:
             print(f"  Progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
         
