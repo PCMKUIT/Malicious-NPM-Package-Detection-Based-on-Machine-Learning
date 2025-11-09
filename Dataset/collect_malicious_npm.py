@@ -83,6 +83,23 @@ def setup_colors():
             return NoColors()
     return Colors
 
+def count_total_successful_packages():
+    """Đếm tổng số packages thành công trong TOÀN BỘ MaliciousDataset"""
+    if not OUTPUT_ROOT.exists():
+        return 0
+    
+    total_success = 0
+    # Đếm từ TẤT CẢ log files
+    for log_file in OUTPUT_ROOT.glob("*.log"):
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if 'SUCCESS:' in line and 'Meets criteria' in line:
+                        total_success += 1
+        except Exception:
+            continue
+    return total_success
+
 def make_github_request(url, max_retries=5):
     """Thực hiện request đến GitHub API với retry logic và rate limiting"""
     # Lấy token từ external source
@@ -181,7 +198,7 @@ def find_npm_packages_via_api():
     # Hiển thị token status
     github_token = get_github_token()
     if github_token:
-        print(f"  {Colors.GREEN}GitHub token detected - using authenticated access{Colors.RESET}")
+        print(f"  Using github token for API requests")
     else:
         print(f"  {Colors.YELLOW}No GitHub token provided - using public API access (rate limits may apply){Colors.RESET}")
     
@@ -483,9 +500,12 @@ def create_summary_report(log_file, summary_file, target_count=2000):
             f.write(f" Total:      {total_processed:4d} packages (100.0%)\n")
             f.write("-" * 60 + "\n")
             f.write(" PACKAGE ALLOCATION STATISTICS:\n")
-            f.write(f" compromised_lib:  {compromised_count:4d} packages\n")
-            f.write(f" malicious_intent: {malicious_count:4d} packages\n")
-            f.write(f" Total:           {success_count:4d} packages\n")
+            compromised_percent = (compromised_count / max(1, success_count)) * 100
+            malicious_percent = (malicious_count / max(1, success_count)) * 100
+
+            f.write(f" compromised_lib:  {compromised_count:4d} packages ({compromised_percent:5.1f}%)\n")
+            f.write(f" malicious_intent: {malicious_count:4d} packages ({malicious_percent:5.1f}%)\n")
+            f.write(f" Total:            {success_count:4d} packages (100.0%)\n")
             f.write("-" * 60 + "\n")
             f.write(" RESEARCH CRITERIA APPLIED:\n")
             f.write(f" • Size: {PackageCriteria.SIZE['MIN_SIZE_KB']}KB - {PackageCriteria.SIZE['MAX_SIZE_MB']}MB\n")
@@ -501,10 +521,8 @@ def create_summary_report(log_file, summary_file, target_count=2000):
     except Exception as e:
         print(f"  Error creating summary: {e}")
 
-def download_malicious_packages_via_api():
+def download_malicious_packages_via_api(remaining_target):
     """Download packages thông qua GitHub API"""
-    TARGET_SUCCESS = 2000
-    
     Colors = setup_colors()
     
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -512,52 +530,16 @@ def download_malicious_packages_via_api():
     daily_log_file = OUTPUT_ROOT / f"{current_date}.log"
     summary_file = OUTPUT_ROOT / f"{current_date}_summary.txt"
     
-    print(f"Running on: {platform.system()} {platform.release()}")
-    print(f"Dataset directory: {OUTPUT_ROOT}")
-    print("--- Start collecting MALICIOUS NPM packages from DataDog ---")
-    print("--- Press Ctrl+C to stop ---")
-    
-    # Hiển thị token status
-    github_token = get_github_token()
-    if github_token:
-        print(f"  {Colors.GREEN}GitHub token detected - using authenticated access{Colors.RESET}")
-    else:
-        print(f"  {Colors.YELLOW}No GitHub token provided - using public API access (rate limits may apply){Colors.RESET}")
-    
-    # Hiển thị feature criteria configuration
-    print(f"\n{Colors.BLUE}=== RESEARCH FEATURE CRITERIA CONFIGURATION ==={Colors.RESET}")
-    print(f"Size: {PackageCriteria.SIZE['MIN_SIZE_KB']}KB - {PackageCriteria.SIZE['MAX_SIZE_MB']}MB")
-    print(f"Content: Min {PackageCriteria.CONTENT['MIN_FILES']} files, Required: {PackageCriteria.CONTENT['REQUIRED_FILES']}")
-    print(f"Metadata: Check typo squatting, Suspicious scripts, Empty metadata")
-    print(f"Based on: Malicious package patterns research")
-    print(f"{Colors.BLUE}================================================={Colors.RESET}\n")
-    
-    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-    daily_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Đếm existing success count
-    existing_success_count = 0
-    if daily_log_file.exists():
-        try:
-            with open(daily_log_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if 'SUCCESS:' in line:
-                        existing_success_count += 1
-        except Exception:
-            existing_success_count = 0
-    
-    remaining_target = TARGET_SUCCESS - existing_success_count
-    
-    if remaining_target <= 0:
-        print(f"  Target already reached: {existing_success_count}/{TARGET_SUCCESS} packages")
-        time.sleep(SLEEP_INTERVAL)
-        return True
-        
-    print("------------------------------------------------------------")
-    print(f"Start collecting at: {datetime.now()}")
     print(f"Working at folder: '{daily_dir}'")
     print(f"Summary Report: '{summary_file}'")
     
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    daily_dir.mkdir(parents=True, exist_ok=True)
+        
+    if remaining_target <= 0:
+        print(f"  Target already reached")
+        return True
+        
     # Tìm packages qua API
     packages = find_npm_packages_via_api()
     
@@ -596,12 +578,12 @@ def download_malicious_packages_via_api():
                 successful_downloads += 1
                 write_to_log(daily_log_file, "SUCCESS", package_path.name, f"Meets criteria: {criteria_reason}")
                 
-                current_total = existing_success_count + successful_downloads
-                formatted_number = format_number(current_total, TARGET_SUCCESS)
+                current_total = count_total_successful_packages()
+                formatted_number = format_number(current_total, MAX_PACKAGES_TOTAL)
                 print(f"      {formatted_number} {Colors.GREEN}[+]{Colors.RESET} {package_name} {Colors.BLUE}[CRITERIA]{Colors.RESET}")
                 
-                if current_total >= TARGET_SUCCESS:
-                    print(f"  {Colors.GREEN}TARGET REACHED: {current_total}/{TARGET_SUCCESS} packages{Colors.RESET}")
+                if current_total >= MAX_PACKAGES_TOTAL:
+                    print(f"  {Colors.GREEN}TARGET REACHED: {current_total}/{MAX_PACKAGES_TOTAL} packages{Colors.RESET}")
                     break
             else:
                 filtered_packages += 1
@@ -614,31 +596,77 @@ def download_malicious_packages_via_api():
             print(f"      {Colors.RED}[-]{Colors.RESET} {package_name}: {result_msg}")
     
     # Tạo summary report
-    create_summary_report(daily_log_file, summary_file, TARGET_SUCCESS)
+    create_summary_report(daily_log_file, summary_file, MAX_PACKAGES_TOTAL)
     
-    current_total_success = existing_success_count + successful_downloads
+    current_total_success = count_total_successful_packages()
     print(f"  Processing summary: {successful_downloads} successful, {filtered_packages} filtered, {failed_downloads} failed")
-    print(f"  Total progress: {current_total_success}/{TARGET_SUCCESS} packages")
+    print(f"  Total progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
     
-    if current_total_success >= TARGET_SUCCESS:
-        print(f"  {Colors.GREEN}TARGET ACHIEVED: {current_total_success}/{TARGET_SUCCESS} packages collected!{Colors.RESET}")
+    # FIX: Thống nhất format output với benign code
+    if current_total_success >= MAX_PACKAGES_TOTAL:
+        print(f"  {Colors.GREEN}TARGET ACHIEVED: {current_total_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
+        print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
     else:
-        print(f"  Progress: {current_total_success}/{TARGET_SUCCESS} packages")
+        print(f"  Progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
     
-    sleep_minutes = SLEEP_INTERVAL // 60
-    print(f"  Finished processing. Continuing after {sleep_minutes} minutes...")
-    
-    return True
+    return successful_downloads > 0
 
 def main():
     try:
+        Colors = setup_colors()
+        OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+        
+        print(f"Running on: {platform.system()} {platform.release()}")
+        print(f"Malicious Dataset directory: {OUTPUT_ROOT}")
+        print("--- Start collecting MALICIOUS NPM packages from DataDog ---")
+        print("--- Press Ctrl+C to stop ---")
+
+        # Hiển thị token status
+        github_token = get_github_token()
+        if github_token:
+            print(f"  {Colors.GREEN}GitHub token detected - using authenticated access{Colors.RESET}")
+        else:
+            print(f"  {Colors.YELLOW}No GitHub token provided - using public API access (rate limits may apply){Colors.RESET}")
+        
+        # Hiển thị feature criteria configuration
+        print(f"\n{Colors.BLUE}=== RESEARCH FEATURE CRITERIA CONFIGURATION ==={Colors.RESET}")
+        print(f"Size: {PackageCriteria.SIZE['MIN_SIZE_KB']}KB - {PackageCriteria.SIZE['MAX_SIZE_MB']}MB")
+        print(f"Content: Min {PackageCriteria.CONTENT['MIN_FILES']} files, Required: {PackageCriteria.CONTENT['REQUIRED_FILES']}")
+        print(f"Metadata: Check typo squatting, Suspicious scripts, Empty metadata")
+        print(f"{Colors.BLUE}================================================={Colors.RESET}\n")
+        
         while True:
-            success = download_malicious_packages_via_api()
+            total_existing_success = count_total_successful_packages()
+            
+            print("------------------------------------------------------------")
+            print(f"Start collecting at: {datetime.now()}")
+            print(f"Total packages in dataset: {total_existing_success}/{MAX_PACKAGES_TOTAL}")
+            
+            if total_existing_success >= MAX_PACKAGES_TOTAL:
+                print(f"  {Colors.GREEN}TARGET ACHIEVED: {total_existing_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
+                print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
+                break  # THÊM BREAK Ở ĐÂY
+            
+            remaining_target = MAX_PACKAGES_TOTAL - total_existing_success
+            print(f"Remaining target: {remaining_target} packages")
+            
+            success = download_malicious_packages_via_api(remaining_target)
             if not success:
                 print("  Collection failed. Retrying after delay...")
+            
+            # KIỂM TRA LẠI TRƯỚC KHI SLEEP
+            total_existing_success = count_total_successful_packages()
+            if total_existing_success >= MAX_PACKAGES_TOTAL:
+                print(f"  {Colors.GREEN}TARGET ACHIEVED: {total_existing_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
+                print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
+                break
+            
+            sleep_minutes = SLEEP_INTERVAL // 60
+            print(f"  Finished processing. Continuing after {sleep_minutes} minutes...")
             time.sleep(SLEEP_INTERVAL)
+            
     except KeyboardInterrupt:
         print("\n--- Collection stopped by user ---")
-
+        
 if __name__ == "__main__":
     main()
