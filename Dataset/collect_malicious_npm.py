@@ -601,14 +601,8 @@ def download_malicious_packages_via_api(remaining_target):
     current_total_success = count_total_successful_packages()
     print(f"  Processing summary: {successful_downloads} successful, {filtered_packages} filtered, {failed_downloads} failed")
     print(f"  Total progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
-    
-    # FIX: Thống nhất format output với benign code
-    if current_total_success >= MAX_PACKAGES_TOTAL:
-        print(f"  {Colors.GREEN}TARGET ACHIEVED: {current_total_success}/{MAX_PACKAGES_TOTAL} packages collected!{Colors.RESET}")
-        print(f"  {Colors.GREEN}Collection completed. Exiting...{Colors.RESET}")
-    else:
-        print(f"  Progress: {current_total_success}/{MAX_PACKAGES_TOTAL} packages")
-    
+    print(f"  Summary report created: {summary_file}")
+
     return successful_downloads > 0
 
 def main():
