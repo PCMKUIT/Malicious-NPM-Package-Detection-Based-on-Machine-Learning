@@ -23,8 +23,8 @@ class AdvancedFeatureExtractor:
     """Optimized feature extractor based on Amalfi research with version change analysis"""
     
     def __init__(self):
-        self.suspicious_packages = ["request", "axios", "node-fetch", "http", "https", "fs-extra", 
-                                   "shelljs", "child_process", "net", "os", "exec", "spawn"]
+        self.suspicious_packages = ["request", "axios", "node-fetch", "fs-extra", 
+                                   "shelljs", "child_process", "exec", "spawn"]
         
     def calculate_entropy(self, data):
         """Calculate the Shannon entropy of a string."""
@@ -51,32 +51,57 @@ class AdvancedFeatureExtractor:
         except Exception:
             return False
 
-    def extract_network_features(self, content):
-        """Extract network-related features including URLs and IPs"""
+    def extract_granular_security_patterns(self, content):
+        """Extract granular security patterns based on MalPacDetector taxonomy"""
         features = {
-            "suspicious_urls": 0,
-            "ip_addresses": 0,
-            "data_exfiltration_patterns": 0
+            # File System (3 features)
+            "fs_read_count": 0,
+            "fs_write_count": 0,
+            "fs_delete_count": 0,
+            
+            # Network (3 features)
+            "http_request_count": 0,
+            "fetch_count": 0,
+            "socket_count": 0,
+            
+            # Process (3 features)
+            "exec_count": 0,
+            "spawn_count": 0,
+            "fork_count": 0,
+            
+            # PII & Sensitive Data (3 features)
+            "password_access": 0,
+            "cookie_access": 0,
+            "env_variable_access": 0,
+            
+            # Obfuscation & Malicious Patterns
+            "base64_pattern_count": 0,
+            "eval_usage_count": 0
         }
         
-        # URL patterns
-        url_pattern = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-        ip_pattern = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
+        # File System Patterns
+        features["fs_read_count"] = len(re.findall(r'fs\.readFile|readFileSync', content))
+        features["fs_write_count"] = len(re.findall(r'fs\.writeFile|writeFileSync', content))
+        features["fs_delete_count"] = len(re.findall(r'fs\.unlink|fs\.rmdir|fs\.rm', content))
         
-        features["suspicious_urls"] = len(url_pattern.findall(content))
-        features["ip_addresses"] = len(ip_pattern.findall(content))
+        # Network Patterns
+        features["http_request_count"] = len(re.findall(r'http\.request|https\.request', content))
+        features["fetch_count"] = len(re.findall(r'fetch\s*\(|axios\.(get|post)', content))
+        features["socket_count"] = len(re.findall(r'net\.Socket|net\.connect', content))
         
-        # Data exfiltration patterns
-        exfil_patterns = [
-            r'\.send\(.*\)',
-            r'\.post\(.*\)',
-            r'XMLHttpRequest',
-            r'fetch\(',
-            r'\.request\('
-        ]
+        # Process Patterns
+        features["exec_count"] = len(re.findall(r'exec\s*\(|execSync', content))
+        features["spawn_count"] = len(re.findall(r'spawn\s*\(|spawnSync', content))
+        features["fork_count"] = len(re.findall(r'child_process\.fork', content))
         
-        for pattern in exfil_patterns:
-            features["data_exfiltration_patterns"] += len(re.findall(pattern, content, re.IGNORECASE))
+        # PII & Sensitive Data
+        features["password_access"] = len(re.findall(r'password|passwd', content, re.IGNORECASE))
+        features["cookie_access"] = len(re.findall(r'document\.cookie', content))
+        features["env_variable_access"] = len(re.findall(r'process\.env', content))
+        
+        # Malicious Patterns
+        features["base64_pattern_count"] = len(re.findall(r'[A-Za-z0-9+/]{20,}={0,2}', content))
+        features["eval_usage_count"] = len(re.findall(r'eval\s*\(', content))
         
         return features
 
@@ -85,14 +110,12 @@ class AdvancedFeatureExtractor:
         if not TREE_SITTER_AVAILABLE or not js_code:
             return {
                 "password_access": 0,
-                "cookie_access": 0,
-                "env_secrets": 0
+                "cookie_access": 0
             }
         
         pii_features = {
             "password_access": 0,
-            "cookie_access": 0,
-            "env_secrets": 0
+            "cookie_access": 0
         }
         
         try:
@@ -105,10 +128,6 @@ class AdvancedFeatureExtractor:
                     # Check for document.cookie
                     if node.text.decode("utf8") == "document.cookie":
                         pii_features["cookie_access"] += 1
-                    
-                    # Check for process.env
-                    if "process.env" in node.text.decode("utf8"):
-                        pii_features["env_secrets"] += 1
                 
                 # Check for password-related patterns
                 if node.type == "property_identifier":
@@ -125,97 +144,10 @@ class AdvancedFeatureExtractor:
         except Exception:
             return pii_features
 
-    def extract_sensitive_code_features(self, js_code):
-        """Enhanced feature extraction using Tree-sitter for sensitive JavaScript patterns"""
-        if not TREE_SITTER_AVAILABLE or not js_code:
-            return {
-                "system_command_usage": 0,
-                "file_access": 0,
-                "env_variable_access": 0,
-                "network_access": 0,
-                "crypto_usage": 0,
-                "data_encoding": 0,
-                "dynamic_code_generation": 0,
-                "os_access": 0
-            }
-
-        try:
-            parser = Parser(JS_LANGUAGE)
-            tree = parser.parse(bytes(js_code, "utf8"))
-            root_node = tree.root_node
-
-            features = {
-                "system_command_usage": 0,
-                "file_access": 0,
-                "env_variable_access": 0,
-                "network_access": 0,
-                "crypto_usage": 0,
-                "data_encoding": 0,
-                "dynamic_code_generation": 0,
-                "os_access": 0
-            }
-
-            def traverse(node):
-                if node.type == "call_expression":
-                    func_node = node.child_by_field_name("function")
-                    if func_node:
-                        func_name = func_node.text.decode("utf8")
-                        
-                        # File system access
-                        if "fs." in func_name and any(op in func_name for op in ["read", "write", "unlink", "copy", "move"]):
-                            features["file_access"] += 1
-                        
-                        # Environment variables
-                        elif "process.env" in func_name:
-                            features["env_variable_access"] += 1
-                        
-                        # System commands
-                        elif any(cmd in func_name for cmd in ["exec", "spawn", "execSync", "spawnSync"]):
-                            features["system_command_usage"] += 1
-                        
-                        # Network access
-                        elif any(net in func_name for net in ["http.", "https.", "fetch", "request", "net."]):
-                            features["network_access"] += 1
-                        
-                        # Crypto functionality
-                        elif "crypto." in func_name or "Crypto" in func_name:
-                            features["crypto_usage"] += 1
-                        
-                        # OS access
-                        elif "os." in func_name:
-                            features["os_access"] += 1
-                        
-                        # Dynamic code generation
-                        elif any(dyn in func_name for dyn in ["eval", "Function", "setTimeout", "setInterval", "setImmediate"]):
-                            features["dynamic_code_generation"] += 1
-                        
-                        # Data encoding
-                        elif any(enc in func_name for enc in ["encodeURIComponent", "decodeURIComponent", "btoa", "atob", "Buffer"]):
-                            features["data_encoding"] += 1
-
-                for child in node.children:
-                    traverse(child)
-
-            traverse(root_node)
-            return features
-        except Exception:
-            return {
-                "system_command_usage": 0,
-                "file_access": 0,
-                "env_variable_access": 0,
-                "network_access": 0,
-                "crypto_usage": 0,
-                "data_encoding": 0,
-                "dynamic_code_generation": 0,
-                "os_access": 0
-            }
-
     def analyze_dependencies(self, package_data):
         """Analyze dependency patterns for suspicious packages"""
         features = {
             "suspicious_dependencies_count": 0,
-            "dependencies_ratio": 0,
-            "dev_dependencies_ratio": 0,
             "total_dependencies_count": 0
         }
         
@@ -227,13 +159,9 @@ class AdvancedFeatureExtractor:
             if any(suspicious in dep.lower() for suspicious in self.suspicious_packages):
                 features["suspicious_dependencies_count"] += 1
         
-        # Calculate ratios
+        # Calculate total
         total_deps = len(dependencies) + len(dev_dependencies)
         features["total_dependencies_count"] = total_deps
-        
-        if total_deps > 0:
-            features["dependencies_ratio"] = len(dependencies) / total_deps
-            features["dev_dependencies_ratio"] = len(dev_dependencies) / total_deps
         
         return features
 
@@ -242,8 +170,7 @@ class AdvancedFeatureExtractor:
         features = {
             "js_files_in_root": 0,
             "hidden_files": 0,
-            "max_file_size_kb": 0,
-            "avg_file_size_kb": 0
+            "max_file_size_kb": 0
         }
         
         files = self.list_all_files(package_path)
@@ -269,26 +196,19 @@ class AdvancedFeatureExtractor:
         # Calculate file size statistics
         if file_sizes:
             features["max_file_size_kb"] = max(file_sizes) / 1024
-            features["avg_file_size_kb"] = sum(file_sizes) / len(file_sizes) / 1024
         
         return features
 
     def extract_version_analysis_features(self, package_path, package_data):
         """Extract version change features based on Amalfi research"""
         features = {
-            # Version type analysis
-            "is_major_update": 0,
-            "is_minor_update": 0,
-            "is_patch_update": 0,
-            "is_first_version": 1,  # Default assumption
-            
-            # Temporal analysis from directory structure
+            "is_first_version": 1,
             "has_other_versions_today": 0,
-            "total_versions_today": 1,
             "is_rapid_update": 0,
-            
-            # Version metadata
-            "has_prerelease": 0
+            "version_velocity": 0,
+            "maintenance_score": 0,
+            "time_between_updates": 0,
+            "update_type": 0
         }
         
         # Analyze semantic versioning
@@ -296,15 +216,23 @@ class AdvancedFeatureExtractor:
         try:
             version = Version(version_str)
             
-            # Check for pre-release versions
-            if version.pre:
-                features["has_prerelease"] = 1
-            
             # Simple version type analysis
             if version.major > 0 and version_str.startswith('1.0.0'):
                 features["is_first_version"] = 1
             else:
                 features["is_first_version"] = 0
+            
+            # Update type classification
+            if version.pre:  # prerelease
+                features["update_type"] = 4
+            elif version.micro > 0 and version_str.count('.') >= 2:  # patch
+                features["update_type"] = 3
+            elif version.minor > 0:  # minor
+                features["update_type"] = 2
+            elif version.major > 0:  # major
+                features["update_type"] = 1
+            else:  # first version
+                features["update_type"] = 0
                 
         except (InvalidVersion, AttributeError):
             # Fallback for invalid versions
@@ -314,13 +242,62 @@ class AdvancedFeatureExtractor:
         date_dir = package_path.parent
         if date_dir.exists():
             sibling_packages = [d for d in date_dir.iterdir() if d.is_dir() and d != package_path]
-            features["total_versions_today"] = len(sibling_packages) + 1
             features["has_other_versions_today"] = 1 if len(sibling_packages) > 0 else 0
             
             # Detect rapid updates (multiple versions same day)
             if len(sibling_packages) >= 2:
                 features["is_rapid_update"] = 1
+            
+            # Version velocity
+            features["version_velocity"] = min(len(sibling_packages) / 10.0, 1.0)
+            
+            # Maintenance score
+            features["maintenance_score"] = 1.0 if len(sibling_packages) > 0 else 0.0
+            
+            # Time between updates (simplified - using directory count as proxy)
+            features["time_between_updates"] = len(sibling_packages)
         
+        return features
+
+    def extract_install_script_features(self, package_path):
+        """Extract install script analysis features - MalPacDetector's SECRET WEAPON"""
+        features = {
+            "has_install_command": 0,
+            "base64_in_install_script": 0,
+            "domain_in_install_script": 0,
+            "network_in_install_script": 0,
+            "process_env_in_install_script": 0,
+            "file_ops_in_install_script": 0,
+            "shell_exec_in_install_script": 0
+        }
+        
+        try:
+            package_json_path = self.find_package_json(package_path)
+            if package_json_path and package_json_path.exists():
+                with open(package_json_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    package_data = json.load(f)
+                
+                scripts = package_data.get('scripts', {})
+                
+                # Check for install-related scripts
+                install_scripts = []
+                for script_name, script_content in scripts.items():
+                    if any(keyword in script_name for keyword in ['install', 'preinstall', 'postinstall']):
+                        install_scripts.append(script_content)
+                        features["has_install_command"] = 1
+                
+                # Analyze install script content
+                for script_content in install_scripts:
+                    features["base64_in_install_script"] += len(re.findall(r'[A-Za-z0-9+/]{20,}={0,2}', script_content))
+                    features["domain_in_install_script"] += len(re.findall(r'https?://[^\s"\']+', script_content))
+                    features["network_in_install_script"] += len(re.findall(r'curl|wget|fetch|http', script_content, re.IGNORECASE))
+                    features["process_env_in_install_script"] += len(re.findall(r'process\.env', script_content))
+                    features["file_ops_in_install_script"] += len(re.findall(r'fs\.|readFile|writeFile', script_content))
+                    features["shell_exec_in_install_script"] += len(re.findall(r'exec|spawn|child_process', script_content))
+                    
+        except Exception as e:
+            print(f"Error extracting install script features: {e}")
+            
         return features
 
     def extract_advanced_features(self, package_dir):
@@ -329,66 +306,57 @@ class AdvancedFeatureExtractor:
             # Entropy features
             "max_entropy": 0,
             "avg_entropy": 0,
+            "entropy_variance": 0,
             "minified_files": 0,
-            "binary_files": 0,
+            "minified_ratio": 0,
+            "obfuscation_score": 0,
             
-            # Security features
-            "system_command_usage": 0,
-            "file_access": 0, 
-            "env_variable_access": 0,
-            "network_access": 0,
-            "crypto_usage": 0,
-            "data_encoding": 0,
-            "dynamic_code_generation": 0,
-            "os_access": 0,
-            
-            # Network features
-            "suspicious_urls": 0,
-            "ip_addresses": 0,
-            "data_exfiltration_patterns": 0,
-            
-            # PII AST features
-            "password_access": 0,
-            "cookie_access": 0,
-            "env_secrets": 0,
+            # Density features
+            "base64_density": 0,
+            "eval_density": 0
         }
 
         entropies = []
-        total_files = 0
+        total_files_analyzed = 0
+        total_js_files = 0
+        minified_files = 0
+        total_base64_count = 0
+        total_eval_count = 0
 
         for root, _, files in os.walk(package_dir):
             for file in files:
                 filepath = os.path.join(root, file)
-                total_files += 1
                 
                 try:
-                    if self.detect_binary(filepath):
-                        features["binary_files"] += 1
-                        continue
-
                     content = self.read_file(filepath)
-                    if content:
+                    if content and len(content) > 100:
                         entropy = self.calculate_entropy(content)
                         entropies.append(entropy)
+                        total_files_analyzed += 1
 
                         # Minified file detection
                         if len(content.splitlines()) < 5 and len(content) > 500:
-                            features["minified_files"] += 1
+                            minified_files += 1
 
                         # JavaScript/TypeScript code analysis
                         if file.endswith(('.js', '.ts', '.jsx', '.tsx')):
-                            js_features = self.extract_sensitive_code_features(content)
-                            for key, value in js_features.items():
-                                features[key] += value
+                            total_js_files += 1
+                            
+                            # Extract granular security patterns
+                            security_features = self.extract_granular_security_patterns(content)
+                            for key, value in security_features.items():
+                                if key in features:
+                                    features[key] += value
+                                else:
+                                    features[key] = value
+                            
+                            # Track totals for density calculation
+                            total_base64_count += security_features["base64_pattern_count"]
+                            total_eval_count += security_features["eval_usage_count"]
                             
                             # Enhanced PII detection using AST
                             pii_ast_features = self.extract_pii_patterns_ast(content)
                             for key, value in pii_ast_features.items():
-                                features[key] += value
-                            
-                            # Network feature extraction
-                            network_features = self.extract_network_features(content)
-                            for key, value in network_features.items():
                                 features[key] += value
 
                 except Exception:
@@ -398,6 +366,21 @@ class AdvancedFeatureExtractor:
         if entropies:
             features["max_entropy"] = max(entropies)
             features["avg_entropy"] = sum(entropies) / len(entropies)
+            if len(entropies) > 1:
+                features["entropy_variance"] = sum((x - features["avg_entropy"]) ** 2 for x in entropies) / len(entropies)
+
+        # Calculate ratios and densities
+        if total_js_files > 0:
+            features["minified_ratio"] = minified_files / total_js_files
+            features["base64_density"] = total_base64_count / total_js_files
+            features["eval_density"] = total_eval_count / total_js_files
+        
+        # Calculate obfuscation score (composite metric)
+        features["obfuscation_score"] = min(
+            (features["minified_ratio"] * 0.4 + 
+             features["base64_density"] * 0.3 + 
+             features["eval_density"] * 0.3) * 10, 1.0
+        )
 
         return features
 
@@ -419,17 +402,15 @@ class AdvancedFeatureExtractor:
                 file_extensions[ext] = file_extensions.get(ext, 0) + 1
             
             features['js_file_ratio'] = file_extensions.get('.js', 0) / max(1, len(files))
-            features['json_file_ratio'] = file_extensions.get('.json', 0) / max(1, len(files))
             
             # 3. Metadata Features
             package_json_path = self.find_package_json(package_path)
             features.update({
                 'dependencies_count': 0,
-                'dev_dependencies_count': 0,
                 'scripts_count': 0,
                 'has_preinstall': 0,
                 'has_postinstall': 0,
-                'has_preuninstall': 0,
+                'has_install_script': 0
             })
 
             package_data = {}
@@ -438,20 +419,17 @@ class AdvancedFeatureExtractor:
                     with open(package_json_path, 'r', encoding='utf-8', errors='ignore') as f:
                         package_data = json.load(f)
                     
-                    # Override với giá trị thực
                     features['dependencies_count'] = len(package_data.get('dependencies', {}))
-                    features['dev_dependencies_count'] = len(package_data.get('devDependencies', {}))
                     features['scripts_count'] = len(package_data.get('scripts', {}))
                     features['has_preinstall'] = 1 if 'preinstall' in package_data.get('scripts', {}) else 0
                     features['has_postinstall'] = 1 if 'postinstall' in package_data.get('scripts', {}) else 0
-                    features['has_preuninstall'] = 1 if 'preuninstall' in package_data.get('scripts', {}) else 0
+                    features['has_install_script'] = 1 if 'install' in package_data.get('scripts', {}) else 0
                     
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     print(f"Error parsing package.json: {e}")
             
             # 4. Content Features
             features['has_readme'] = 1 if any('readme' in str(file).lower() for file in files) else 0
-            features['has_license'] = 1 if any('license' in str(file).lower() for file in files) else 0
             
             # 5. Dependency Analysis Features
             dependency_features = self.analyze_dependencies(package_data)
@@ -461,26 +439,13 @@ class AdvancedFeatureExtractor:
             file_structure_features = self.analyze_file_structure(package_path)
             features.update(file_structure_features)
             
-            # 7. Version Analysis Features (QUAN TRỌNG - từ ý bạn)
+            # 7. Version Analysis Features
             version_features = self.extract_version_analysis_features(package_path, package_data)
             features.update(version_features)
             
         except Exception as e:
             print(f"Error extracting basic features: {e}")
-            # Set comprehensive default values
-            features = {
-                'file_count': 0, 'total_size_kb': 0, 'has_node_modules': 0,
-                'js_file_ratio': 0, 'json_file_ratio': 0,
-                'dependencies_count': 0, 'dev_dependencies_count': 0, 'scripts_count': 0,
-                'has_preinstall': 0, 'has_postinstall': 0, 'has_preuninstall': 0,
-                'has_readme': 0, 'has_license': 0,
-                'suspicious_dependencies_count': 0, 'dependencies_ratio': 0, 
-                'dev_dependencies_ratio': 0, 'total_dependencies_count': 0,
-                'js_files_in_root': 0, 'hidden_files': 0, 'max_file_size_kb': 0,
-                'avg_file_size_kb': 0, 'is_major_update': 0, 'is_minor_update': 0,
-                'is_patch_update': 0, 'is_first_version': 1, 'has_other_versions_today': 0,
-                'total_versions_today': 1, 'is_rapid_update': 0, 'has_prerelease': 0
-            }
+            features = self._get_default_features()
         
         return features
 
@@ -524,13 +489,56 @@ class AdvancedFeatureExtractor:
                 return json_path
         return None
 
+    def _get_default_features(self):
+        """Return default feature set with 52 features"""
+        return {
+            # Structural Features (8)
+            'file_count': 0, 'total_size_kb': 0, 'has_node_modules': 0,
+            'js_file_ratio': 0, 'js_files_in_root': 0, 'hidden_files': 0,
+            'max_file_size_kb': 0, 'dir_count': 0,
+            
+            # Package Metadata (7)
+            'dependencies_count': 0, 'scripts_count': 0, 'has_preinstall': 0,
+            'has_postinstall': 0, 'has_install_script': 0,
+            'suspicious_dependencies_count': 0, 'total_dependencies_count': 0,
+            
+            # Version Analysis (7)
+            'is_first_version': 1, 'has_other_versions_today': 0, 'is_rapid_update': 0,
+            'version_velocity': 0, 'maintenance_score': 0, 'time_between_updates': 0,
+            'update_type': 0,
+            
+            # Security Patterns (12)
+            'fs_read_count': 0, 'fs_write_count': 0, 'fs_delete_count': 0,
+            'http_request_count': 0, 'fetch_count': 0, 'socket_count': 0,
+            'exec_count': 0, 'spawn_count': 0, 'fork_count': 0,
+            'password_access': 0, 'cookie_access': 0, 'env_variable_access': 0,
+            
+            # Obfuscation & Entropy (6)
+            'max_entropy': 0, 'avg_entropy': 0, 'entropy_variance': 0,
+            'minified_files': 0, 'minified_ratio': 0, 'obfuscation_score': 0,
+            
+            # Malicious Patterns (4)
+            'base64_pattern_count': 0, 'eval_usage_count': 0,
+            'base64_density': 0, 'eval_density': 0,
+            
+            # Install Script Analysis (7)
+            'has_install_command': 0, 'base64_in_install_script': 0,
+            'domain_in_install_script': 0, 'network_in_install_script': 0,
+            'process_env_in_install_script': 0, 'file_ops_in_install_script': 0,
+            'shell_exec_in_install_script': 0,
+            
+            # Metadata & Hygiene (1)
+            'has_readme': 0
+        }
+
     def extract_all_features(self, package_path, package_type="unknown"):
-        """Extract both basic and advanced features"""
+        """Extract all 52 features"""
         basic_features = self.extract_basic_features(package_path)
         advanced_features = self.extract_advanced_features(package_path)
+        install_script_features = self.extract_install_script_features(package_path)
         
         # Combine all features
-        all_features = {**basic_features, **advanced_features}
+        all_features = {**basic_features, **advanced_features, **install_script_features}
         all_features['package_type'] = package_type
         all_features['collection_date'] = datetime.now().isoformat()
         all_features['analysis_timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
