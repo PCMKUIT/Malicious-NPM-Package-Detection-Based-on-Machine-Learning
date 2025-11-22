@@ -15,7 +15,7 @@ import sys
 CURRENT_DIR = Path(__file__).parent
 OUTPUT_ROOT = CURRENT_DIR / "MaliciousDataset"
 SLEEP_INTERVAL = 3600
-MAX_PACKAGES_TOTAL = 2000
+MAX_PACKAGES_TOTAL = 3000
 
 # =============================================================================
 # FEATURE CRITERIA CONFIGURATION - UPDATED FOR MALICIOUS PACKAGES
